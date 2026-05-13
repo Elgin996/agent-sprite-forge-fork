@@ -6,15 +6,21 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 from collections import deque
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 from PIL import Image
+from scipy import ndimage
 
 
 MAGENTA = (255, 0, 255)
+
+_USE_LEGACY = bool(os.environ.get("PROP_PACK_LEGACY"))
+_DILATION_STRUCT = np.ones((3, 3), dtype=bool)
 
 
 def color_distance(rgb: tuple[int, int, int], target: tuple[int, int, int] = MAGENTA) -> float:
@@ -23,7 +29,7 @@ def color_distance(rgb: tuple[int, int, int], target: tuple[int, int, int] = MAG
     return math.sqrt((r - tr) ** 2 + (g - tg) ** 2 + (b - tb) ** 2)
 
 
-def remove_bg_magenta(img: Image.Image, threshold: int, edge_threshold: int) -> Image.Image:
+def _remove_bg_magenta_loop(img: Image.Image, threshold: int, edge_threshold: int) -> Image.Image:
     img = img.convert("RGBA")
     pixels = img.load()
     width, height = img.size
@@ -65,6 +71,44 @@ def remove_bg_magenta(img: Image.Image, threshold: int, edge_threshold: int) -> 
     return img
 
 
+def remove_bg_magenta(img: Image.Image, threshold: int, edge_threshold: int) -> Image.Image:
+    """Strip magenta background then bleed transparency inward from edges.
+
+    Byte-equivalent to the legacy `_remove_bg_magenta_loop`. Implemented as one
+    `scipy.ndimage.binary_dilation` call (mask + iterations=-1), which is the
+    C-level equivalent of the original 8-connected edge-bleed BFS.
+    """
+    if _USE_LEGACY:
+        return _remove_bg_magenta_loop(img, threshold, edge_threshold)
+
+    arr = np.array(img.convert("RGBA"), copy=True)
+    rgb = arr[..., :3].astype(np.int32)
+    alpha = arr[..., 3].copy()
+
+    dr = rgb[..., 0] - MAGENTA[0]
+    dg = rgb[..., 1] - MAGENTA[1]
+    db = rgb[..., 2] - MAGENTA[2]
+    dist = np.sqrt(dr * dr + dg * dg + db * db)
+
+    first_pass = (alpha > 0) & (dist < threshold)
+    arr[first_pass] = 0
+    alpha[first_pass] = 0
+
+    qualifying = (alpha == 0) | (dist < edge_threshold)
+
+    seed = np.zeros_like(qualifying)
+    seed[0, :] = qualifying[0, :]
+    seed[-1, :] = qualifying[-1, :]
+    seed[:, 0] = qualifying[:, 0]
+    seed[:, -1] = qualifying[:, -1]
+
+    reached = ndimage.binary_dilation(seed, structure=_DILATION_STRUCT, mask=qualifying, iterations=-1)
+
+    cleared = reached & (alpha > 0)
+    arr[cleared] = 0
+    return Image.fromarray(arr, mode="RGBA")
+
+
 def trim_border(img: Image.Image, px: int) -> Image.Image:
     if px <= 0:
         return img
@@ -75,6 +119,12 @@ def trim_border(img: Image.Image, px: int) -> Image.Image:
 
 
 def clean_edges(img: Image.Image, depth: int) -> Image.Image:
+    """Clear dark or near-magenta pixels in the outer `depth`-thick frame.
+
+    Stays as a plain Python loop: production `depth` is 2, touching only the
+    perimeter band. Benchmarks show numpy vectorization loses here because
+    numpy's per-call overhead dominates at this small workload.
+    """
     if depth <= 0:
         return img
     pixels = img.load()
@@ -96,47 +146,44 @@ def clean_edges(img: Image.Image, depth: int) -> Image.Image:
 
 
 def connected_components(img: Image.Image, min_area: int) -> list[dict[str, object]]:
-    alpha = img.getchannel("A")
-    pixels = alpha.load()
-    width, height = img.size
-    visited = [[False] * width for _ in range(height)]
+    """4-connected labelling via `scipy.ndimage.label`.
+
+    Each returned dict carries `area`, `bbox`, `touches_edge`, plus the shared
+    `_labels` int32 array and this component's `_label` id (consumed by
+    `mask_to_component`). Components are sorted by descending area.
+    """
+    alpha = np.array(img.getchannel("A"))
+    height, width = alpha.shape
+    mask = alpha > 0
+    labels, n = ndimage.label(mask)
+    if n == 0:
+        return []
+
+    areas = np.bincount(labels.ravel(), minlength=n + 1)
+    objects = ndimage.find_objects(labels)
     components: list[dict[str, object]] = []
-
-    for y in range(height):
-        for x in range(width):
-            if pixels[x, y] == 0 or visited[y][x]:
-                continue
-            queue: deque[tuple[int, int]] = deque([(x, y)])
-            visited[y][x] = True
-            coords: list[tuple[int, int]] = []
-            min_x = max_x = x
-            min_y = max_y = y
-            touches_edge = x == 0 or y == 0 or x == width - 1 or y == height - 1
-
-            while queue:
-                cx, cy = queue.popleft()
-                coords.append((cx, cy))
-                min_x = min(min_x, cx)
-                min_y = min(min_y, cy)
-                max_x = max(max_x, cx)
-                max_y = max(max_y, cy)
-                if cx == 0 or cy == 0 or cx == width - 1 or cy == height - 1:
-                    touches_edge = True
-                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    nx, ny = cx + dx, cy + dy
-                    if 0 <= nx < width and 0 <= ny < height and pixels[nx, ny] > 0 and not visited[ny][nx]:
-                        visited[ny][nx] = True
-                        queue.append((nx, ny))
-
-            if len(coords) >= min_area:
-                components.append(
-                    {
-                        "area": len(coords),
-                        "bbox": (min_x, min_y, max_x + 1, max_y + 1),
-                        "touches_edge": touches_edge,
-                        "coords": coords,
-                    }
-                )
+    for label_id in range(1, n + 1):
+        area = int(areas[label_id])
+        if area < min_area:
+            continue
+        y_slice, x_slice = objects[label_id - 1]
+        min_x, min_y = x_slice.start, y_slice.start
+        max_x_excl, max_y_excl = x_slice.stop, y_slice.stop
+        touches_edge = (
+            min_x == 0
+            or min_y == 0
+            or max_x_excl == width
+            or max_y_excl == height
+        )
+        components.append(
+            {
+                "area": area,
+                "bbox": (min_x, min_y, max_x_excl, max_y_excl),
+                "touches_edge": touches_edge,
+                "_labels": labels,
+                "_label": label_id,
+            }
+        )
 
     components.sort(key=lambda item: int(item["area"]), reverse=True)
     return components
@@ -192,12 +239,13 @@ def alpha_bbox(img: Image.Image) -> tuple[int, int, int, int] | None:
 
 
 def mask_to_component(img: Image.Image, component: dict[str, object]) -> Image.Image:
-    selected = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    src = img.load()
-    dst = selected.load()
-    for x, y in component["coords"]:  # type: ignore[index]
-        dst[x, y] = src[x, y]
-    return selected
+    labels = component["_labels"]  # type: ignore[index]
+    label_id = component["_label"]  # type: ignore[index]
+    arr = np.array(img.convert("RGBA"))
+    mask = labels == label_id
+    out = np.zeros_like(arr)
+    out[mask] = arr[mask]
+    return Image.fromarray(out, mode="RGBA")
 
 
 def extract_cell(

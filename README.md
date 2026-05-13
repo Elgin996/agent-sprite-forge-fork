@@ -446,8 +446,11 @@ The local post-processor depends on:
 
 - `Pillow`
 - `numpy`
+- `scipy`
 
 They are listed in [`requirements.txt`](./requirements.txt). Codex handles image generation itself, but these Python packages are still needed for magenta background removal, frame splitting, bounding-box extraction, alignment/rescaling, transparent GIF/PNG export, and prop-pack slicing.
+
+`remove_bg_magenta` runs the edge-bleed flood as a single `scipy.ndimage.binary_dilation(mask=..., iterations=-1)` call, and `connected_components` uses `scipy.ndimage.label` + `find_objects` — together they are about 30× faster than the original per-pixel BFS on a 1024×1024 sheet. The legacy loop implementations are still in the source for fallback; set `SPRITE_FORGE_LEGACY=1` or `PROP_PACK_LEGACY=1` in the environment to force them.
 
 ## Repository Layout
 
@@ -459,6 +462,7 @@ agent-sprite-forge/
   README.ja.md
   README.ko.md
   requirements.txt
+  requirements-dev.txt
   src/
   skills/
     generate2dmap/
@@ -482,7 +486,23 @@ agent-sprite-forge/
       scripts/
         generate2dsprite.py
         make_layout_guide.py
+  tests/
+    conftest.py
+    fixtures/
+    test_sprite_pipeline.py
+    test_prop_pack.py
 ```
+
+## Development
+
+The Python processors have regression tests that pin the chroma-key, edge-bleed, connected-components, and prop-pack pipelines to byte-identical output against captured `.npy` golden fixtures. Install dev dependencies and run them with:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest tests/
+```
+
+The tests also pass with `SPRITE_FORGE_LEGACY=1 PROP_PACK_LEGACY=1` set, confirming the vectorized and loop implementations produce identical results.
 
 ## Suggested Prompts
 
