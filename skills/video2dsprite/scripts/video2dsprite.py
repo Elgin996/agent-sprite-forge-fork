@@ -2,10 +2,10 @@
 """Postprocess Grok image_to_video clips into dense 2D sprites.
 
 Pipeline steps (deterministic only — no creative generation):
-  extract  → ffmpeg frames from mp4
-  clean    → magenta flood-fill chroma + light despill
-  sample   → even-index frame sets + feet/center normalize
-  process  → extract + clean + sample in one shot
+  extract  -> ffmpeg frames from mp4
+  clean    -> magenta flood-fill chroma + light despill
+  sample   -> even-index frame sets + feet/center normalize
+  process  -> extract + clean + sample in one shot
 
 This skill is designed for Grok Build (image_gen + image_to_video).
 The script itself only needs ffmpeg, Pillow, and numpy.
@@ -34,6 +34,27 @@ def _ensure_dir(path: Path) -> Path:
     return path
 
 
+def _remove_generated_files(directory: Path, pattern: str) -> None:
+    """Remove only generated files matching a known pattern in one directory."""
+    if not directory.is_dir():
+        return
+    for path in directory.glob(pattern):
+        if path.is_file():
+            path.unlink()
+
+
+def safe_print(message: object, *, file: object | None = None) -> None:
+    """Print CLI text without letting an incompatible console encoding fail the run."""
+    stream = sys.stdout if file is None else file
+    text = str(message)
+    try:
+        print(text, file=stream)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, "encoding", None) or "ascii"
+        fallback = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(fallback, file=stream)
+
+
 def _parse_counts(text: str) -> list[int]:
     counts: list[int] = []
     for part in text.split(","):
@@ -50,9 +71,15 @@ def _parse_counts(text: str) -> list[int]:
 
 
 def sample_indices(n_total: int, n_want: int) -> list[int]:
-    if n_total <= 0:
-        return []
-    if n_want >= n_total:
+    if n_total < 0:
+        raise ValueError(f"available frame count cannot be negative, got {n_total}")
+    if n_want < 1:
+        raise ValueError(f"requested frame count must be >= 1, got {n_want}")
+    if n_want > n_total:
+        raise ValueError(
+            f"requested {n_want} frames, but only {n_total} clean frames are available"
+        )
+    if n_want == n_total:
         return list(range(n_total))
     if n_want == 1:
         return [0]
@@ -87,7 +114,7 @@ def extract_frames(video: Path, out_dir: Path, fps: float = 0.0) -> list[Path]:
 
 
 def _near_magenta_mask(rgb: np.ndarray, dist: float = 55.0) -> np.ndarray:
-    """rgb: HxWx3 uint8 → bool mask of keyable magenta-ish pixels."""
+    """rgb: HxWx3 uint8 -> bool mask of keyable magenta-ish pixels."""
     f = rgb.astype(np.float32)
     # Distance to pure magenta in RGB.
     d = np.linalg.norm(f - MAGENTA, axis=2)
@@ -188,7 +215,7 @@ def normalize_sprite(
         scale = (cell - 4) / float(ch)
         nw = max(1, int(round(cw * scale)))
         nh = max(1, int(round(ch * scale)))
-    resized = crop.resize((nw, nh), Image.Resampling.LANCZOS)
+    resized = crop if (nw, nh) == crop.size else crop.resize((nw, nh), Image.Resampling.LANCZOS)
     if anchor == "center":
         x = (cell - nw) // 2
         y = (cell - nh) // 2
@@ -199,7 +226,7 @@ def normalize_sprite(
             y = 0
         if y + nh > cell:
             y = max(0, cell - nh)
-    canvas.paste(resized, (x, y), resized)
+    canvas.alpha_composite(resized, (x, y))
     return canvas
 
 
@@ -208,19 +235,20 @@ def clean_frames(
     clean_dir: Path,
     dist: float = 55.0,
 ) -> list[Path]:
-    _ensure_dir(clean_dir)
     raws = sorted(raw_dir.glob("frame_*.png"))
     if not raws:
         raise RuntimeError(f"no raw frames in {raw_dir}")
+    _ensure_dir(clean_dir)
+    _remove_generated_files(clean_dir, "clean_*.png")
     outs: list[Path] = []
     for i, path in enumerate(raws):
-        im = Image.open(path)
-        cleaned = chroma_key_rgba(im, dist=dist)
+        with Image.open(path) as im:
+            cleaned = chroma_key_rgba(im, dist=dist)
         out = clean_dir / f"clean_{i:04d}.png"
         cleaned.save(out)
         outs.append(out)
         if (i + 1) % 25 == 0 or i + 1 == len(raws):
-            print(f"  cleaned {i + 1}/{len(raws)}")
+            safe_print(f"  cleaned {i + 1}/{len(raws)}")
     return outs
 
 
@@ -231,8 +259,16 @@ def build_exports(
     n_frames: int,
     gif_ms: int | None = None,
 ) -> dict:
+    actual_count = len(sprites)
+    if actual_count <= 0:
+        raise ValueError("Cannot export an empty sprite set.")
+    if actual_count != n_frames:
+        raise ValueError(
+            f"Sprite count mismatch: declared {n_frames}, got {actual_count}."
+        )
     _ensure_dir(out_sprite_dir)
     sub = _ensure_dir(out_sprite_dir / tag) if tag else out_sprite_dir
+    _remove_generated_files(sub, "sprite_*.png")
     paths = []
     for i, sp in enumerate(sprites):
         p = sub / f"sprite_{i + 1:02d}.png"
@@ -242,7 +278,7 @@ def build_exports(
     size = sprites[0].size[0]
     strip = Image.new("RGBA", (size * len(sprites), size), (0, 0, 0, 0))
     for i, sp in enumerate(sprites):
-        strip.paste(sp, (i * size, 0), sp)
+        strip.alpha_composite(sp, (i * size, 0))
     strip_path = out_sprite_dir / f"run-strip-{n_frames}.png"
     strip.save(strip_path)
 
@@ -251,7 +287,7 @@ def build_exports(
     grid = Image.new("RGBA", (size * cols, size * rows), (0, 0, 0, 0))
     for i, sp in enumerate(sprites):
         r, c = divmod(i, cols)
-        grid.paste(sp, (c * size, r * size), sp)
+        grid.alpha_composite(sp, (c * size, r * size))
     grid_path = out_sprite_dir / f"run-grid-{n_frames}.png"
     grid.save(grid_path)
 
@@ -268,7 +304,7 @@ def build_exports(
     frames_gif = []
     for sp in sprites:
         bg = Image.new("RGBA", sp.size, (30, 30, 40, 255))
-        bg.paste(sp, (0, 0), sp)
+        bg.alpha_composite(sp, (0, 0))
         frames_gif.append(bg.convert("P", palette=Image.ADAPTIVE, colors=255))
     gif_path = out_sprite_dir / f"run-preview-{n_frames}.gif"
     frames_gif[0].save(
@@ -308,23 +344,37 @@ def sample_and_export(
     cleans = sorted(clean_dir.glob("clean_*.png"))
     if not cleans:
         raise RuntimeError(f"no cleaned frames in {clean_dir}")
-    sprite_dir = _ensure_dir(out_dir / "sprite")
     n_total = len(cleans)
+    requested_counts = list(frame_counts)
+    if not requested_counts:
+        raise ValueError("at least one frame count required")
+    for n_want in requested_counts:
+        if n_want < 1:
+            raise ValueError(f"requested frame count must be >= 1, got {n_want}")
+        if n_want > n_total:
+            raise ValueError(
+                f"requested {n_want} frames, but only {n_total} clean frames are available"
+            )
+
+    sprite_dir = out_dir / "sprite"
+    _ensure_dir(sprite_dir)
+
     results = []
-    for n_want in frame_counts:
+    for n_want in requested_counts:
         idxs = sample_indices(n_total, n_want)
         sprites = []
         for idx in idxs:
-            im = Image.open(cleans[idx]).convert("RGBA")
-            sprites.append(
-                normalize_sprite(
-                    im,
-                    cell=cell,
-                    body_height=body_height,
-                    foot_y=foot_y,
-                    anchor=anchor,
+            with Image.open(cleans[idx]) as source:
+                im = source.convert("RGBA")
+                sprites.append(
+                    normalize_sprite(
+                        im,
+                        cell=cell,
+                        body_height=body_height,
+                        foot_y=foot_y,
+                        anchor=anchor,
+                    )
                 )
-            )
         tag = f"x{n_want}" if n_want != 8 else ""
         # Always also write under xN for consistency when n!=8;
         # for 8, write both root sprites and optional x8.
@@ -337,7 +387,7 @@ def sample_and_export(
             info = build_exports(sprites, sprite_dir, tag=tag, n_frames=n_want)
         info["indices"] = idxs
         results.append(info)
-        print(f"exported {n_want} frames → {info['gif']}")
+        safe_print(f"exported {n_want} frames -> {info['gif']}")
     return {"total_clean": n_total, "sets": results}
 
 
@@ -364,13 +414,13 @@ def write_readme(out_dir: Path, meta: dict) -> None:
 
 def cmd_extract(args: argparse.Namespace) -> int:
     frames = extract_frames(Path(args.video), Path(args.out_dir), fps=args.fps)
-    print(f"extracted {len(frames)} frames → {args.out_dir}")
+    safe_print(f"extracted {len(frames)} frames -> {args.out_dir}")
     return 0
 
 
 def cmd_clean(args: argparse.Namespace) -> int:
     outs = clean_frames(Path(args.raw_dir), Path(args.out_dir), dist=args.dist)
-    print(f"cleaned {len(outs)} frames → {args.out_dir}")
+    safe_print(f"cleaned {len(outs)} frames -> {args.out_dir}")
     return 0
 
 
@@ -393,7 +443,7 @@ def cmd_sample(args: argparse.Namespace) -> int:
     }
     (out / "pipeline-meta.json").write_text(json.dumps(full, indent=2), encoding="utf-8")
     write_readme(out, full)
-    print("sample done")
+    safe_print("sample done")
     return 0
 
 
@@ -405,12 +455,12 @@ def cmd_process(args: argparse.Namespace) -> int:
     if not video.is_file():
         raise FileNotFoundError(video)
 
-    print(f"extract {video}")
+    safe_print(f"extract {video}")
     frames = extract_frames(video, raw_dir, fps=args.fps)
-    print(f"clean {len(frames)} frames")
+    safe_print(f"clean {len(frames)} frames")
     clean_frames(raw_dir, clean_dir, dist=args.dist)
     counts = _parse_counts(args.frame_counts)
-    print(f"sample counts={counts}")
+    safe_print(f"sample counts={counts}")
     meta_sample = sample_and_export(
         clean_dir=clean_dir,
         out_dir=out,
@@ -436,12 +486,12 @@ def cmd_process(args: argparse.Namespace) -> int:
     }
     (out / "pipeline-meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     write_readme(out, meta)
-    print("process done")
+    safe_print("process done")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Video → dense 2D sprite postprocessor")
+    p = argparse.ArgumentParser(description="Video -> dense 2D sprite postprocessor")
     sub = p.add_subparsers(dest="command", required=True)
 
     def add_common_sample(sp: argparse.ArgumentParser) -> None:
@@ -487,7 +537,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except Exception as exc:  # noqa: BLE001 — CLI surface
-        print(f"error: {exc}", file=sys.stderr)
+        safe_print(f"error: {exc}", file=sys.stderr)
         return 1
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import itertools
 import json
 import sys
 import tempfile
@@ -37,6 +38,29 @@ SUBJECT = (20, 40, 60, 255)
 
 
 class SplitGridTests(unittest.TestCase):
+    def test_rgba_alpha_is_preserved_in_fit_preserve_and_sheet(self) -> None:
+        source = Image.new("RGBA", (4, 4), (20, 40, 60, 255))
+        source.putpixel((1, 1), (20, 40, 60, 128))
+        source.putpixel((2, 2), (0, 0, 0, 0))
+
+        for strategy in ("fit", "preserve"):
+            frames, _info = MODULE.split_grid(
+                source,
+                rows=1,
+                cols=1,
+                cell_size=4,
+                threshold=100,
+                edge_threshold=150,
+                fit_scale=1.0,
+                trim_border_px=0,
+                edge_clean_depth=0,
+                scale_strategy=strategy,
+            )
+            self.assertEqual(frames[0].tobytes(), source.tobytes())
+
+            sheet = MODULE.compose_sheet(frames, rows=1, cols=1, cell_size=4)
+            self.assertEqual(sheet.tobytes(), source.tobytes())
+
     def test_edge_touch_uses_trimmed_frame_dimensions(self) -> None:
         image = Image.new("RGBA", (20, 20), MAGENTA)
         image.paste(SUBJECT, (2, 5, 18, 15))
@@ -283,6 +307,47 @@ class GodotSprite3DBundleTests(unittest.TestCase):
                 one_shot_actions={"hurt"},
             )
 
+    def test_bundle_scale_is_invariant_to_action_order(self) -> None:
+        contracts = {
+            "idle": ("idle.json", self.make_contract(0.7, 0.0042)),
+            "hurt": ("hurt.json", self.make_contract(0.705, 0.00424)),
+            "attack": ("attack.json", self.make_contract(0.704, 0.00423)),
+        }
+        bundles = []
+        for order in itertools.permutations(contracts):
+            ordered = {action: contracts[action] for action in order}
+            bundles.append(
+                MODULE.build_godot_sprite3d_bundle(ordered, default_action="idle")
+            )
+
+        for bundle in bundles:
+            self.assertEqual(bundle["world_height"], 0.7)
+            self.assertEqual(bundle["pixel_size"], 0.0042)
+        self.assertEqual(
+            {(bundle["world_height_max_drift"], bundle["pixel_size_max_drift"]) for bundle in bundles},
+            {(bundles[0]["world_height_max_drift"], bundles[0]["pixel_size_max_drift"])},
+        )
+
+    def test_default_action_reference_is_used_when_default_is_last(self) -> None:
+        contracts = {
+            "attack": ("attack.json", self.make_contract(0.728, 0.00436)),
+            "hurt": ("hurt.json", self.make_contract(0.714, 0.00428)),
+            "idle": ("idle.json", self.make_contract(0.7, 0.0042)),
+        }
+        with self.assertRaisesRegex(ValueError, "world-height drift"):
+            MODULE.build_godot_sprite3d_bundle(contracts, default_action="idle")
+
+    def test_default_action_last_sets_canonical_scale(self) -> None:
+        bundle = MODULE.build_godot_sprite3d_bundle(
+            {
+                "hurt": ("hurt.json", self.make_contract(0.705, 0.00424)),
+                "idle": ("idle.json", self.make_contract(0.7, 0.0042)),
+            },
+            default_action="idle",
+        )
+        self.assertEqual(bundle["world_height"], 0.7)
+        self.assertEqual(bundle["pixel_size"], 0.0042)
+
     def test_scale_profile_locks_runtime_pixel_size(self) -> None:
         metadata = ScaleProfileTests().make_metadata()
         metadata["godot_sprite3d"] = {
@@ -307,6 +372,70 @@ class ParserTests(unittest.TestCase):
             ]
         )
         self.assertTrue(args.allow_source_edge_touch)
+
+    def test_custom_grid_prefixes_are_safe_and_slugged(self) -> None:
+        self.assertEqual(MODULE.validate_filename_prefix("Heavy Attack"), "heavy-attack")
+        for value in (
+            "../outside",
+            r"..\outside",
+            "/absolute",
+            r"C:\absolute",
+            "CON",
+            "NUL",
+            "bad\u0085prefix",
+            "bad\u200bprefix",
+        ):
+            with self.assertRaises(ValueError):
+                MODULE.validate_filename_prefix(value)
+
+    def test_invalid_custom_prefix_writes_no_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "raw.png"
+            Image.new("RGBA", (4, 4), (20, 40, 60, 255)).save(input_path)
+            output_dir = root / "out"
+            args = MODULE.build_parser().parse_args(
+                [
+                    "process",
+                    "--input", str(input_path),
+                    "--target", "asset",
+                    "--mode", "sheet",
+                    "--output-dir", str(output_dir),
+                    "--rows", "1",
+                    "--cols", "1",
+                    "--label-prefix", "../outside",
+                    "--trim-border", "0",
+                    "--edge-clean-depth", "0",
+                ]
+            )
+            with self.assertRaises(ValueError):
+                MODULE.cmd_process(args)
+            self.assertFalse(output_dir.exists())
+
+    def test_valid_custom_prefix_uses_contained_slugged_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "raw.png"
+            Image.new("RGBA", (4, 4), (20, 40, 60, 255)).save(input_path)
+            output_dir = root / "out"
+            args = MODULE.build_parser().parse_args(
+                [
+                    "process",
+                    "--input", str(input_path),
+                    "--target", "asset",
+                    "--mode", "sheet",
+                    "--output-dir", str(output_dir),
+                    "--rows", "1",
+                    "--cols", "1",
+                    "--label-prefix", "Heavy Attack",
+                    "--fit-scale", "1",
+                    "--trim-border", "0",
+                    "--edge-clean-depth", "0",
+                ]
+            )
+            MODULE.cmd_process(args)
+            self.assertTrue((output_dir / "heavy-attack-1.png").is_file())
+            self.assertFalse((root / "outside-1.png").exists())
 
 
 if __name__ == "__main__":

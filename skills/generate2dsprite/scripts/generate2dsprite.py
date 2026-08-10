@@ -9,6 +9,7 @@ import json
 import math
 import random
 import re
+import unicodedata
 from collections import deque
 from pathlib import Path
 
@@ -694,18 +695,10 @@ def build_godot_sprite3d_bundle(
         raise ValueError("Maximum pixel-size drift cannot be negative.")
 
     one_shots = set(one_shot_actions or set())
-    unknown_one_shots = one_shots.difference(action_contracts)
-    if unknown_one_shots:
-        raise ValueError(
-            "One-shot actions are missing contracts: " + ", ".join(sorted(unknown_one_shots))
-        )
 
-    action_payload: dict[str, object] = {}
-    reference_world_height = 0.0
-    reference_pixel_size = 0.0
-    maximum_drift = 0.0
-    maximum_pixel_size_drift = 0.0
-    for action, (contract_ref, contract) in action_contracts.items():
+    def validate_contract(
+        action: str, contract: dict[str, object]
+    ) -> tuple[float, float]:
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", action):
             raise ValueError(
                 f"Invalid action name '{action}'; use lowercase letters, digits, hyphens, or underscores."
@@ -720,10 +713,26 @@ def build_godot_sprite3d_bundle(
         pixel_size = float(contract.get("recommended_pixel_size", 0.0))
         if pixel_size <= 0:
             raise ValueError(f"Action '{action}' has no valid recommended pixel size.")
+        return world_height, pixel_size
 
-        if reference_world_height <= 0:
-            reference_world_height = world_height
-            reference_pixel_size = pixel_size
+    default_contract = action_contracts[default_action][1]
+    reference_world_height, reference_pixel_size = validate_contract(
+        default_action, default_contract
+    )
+    unknown_one_shots = one_shots.difference(action_contracts)
+    if unknown_one_shots:
+        raise ValueError(
+            "One-shot actions are missing contracts: " + ", ".join(sorted(unknown_one_shots))
+        )
+
+    action_payload: dict[str, object] = {}
+    maximum_drift = 0.0
+    maximum_pixel_size_drift = 0.0
+    for action, (contract_ref, contract) in action_contracts.items():
+        if action == default_action:
+            world_height, pixel_size = reference_world_height, reference_pixel_size
+        else:
+            world_height, pixel_size = validate_contract(action, contract)
         drift = abs(world_height - reference_world_height) / reference_world_height
         maximum_drift = max(maximum_drift, drift)
         if drift > max_world_height_drift:
@@ -905,6 +914,54 @@ def center_single_sprite(img: Image.Image, size: int, threshold: int, edge_thres
     return canvas
 
 
+WINDOWS_RESERVED_DEVICE_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
+
+
+def validate_filename_prefix(value: str) -> str:
+    """Validate and slug a custom-grid filename prefix."""
+    text = value.strip()
+    if not text:
+        raise ValueError("Custom-grid filename prefixes cannot be empty.")
+    if any(unicodedata.category(character).startswith("C") for character in text):
+        raise ValueError("Custom-grid filename prefixes cannot contain control characters.")
+    if text in {".", ".."}:
+        raise ValueError("Custom-grid filename prefixes cannot be path components '.' or '..'.")
+    if "/" in text or "\\" in text:
+        raise ValueError("Custom-grid filename prefixes cannot contain path separators.")
+    if text.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", text):
+        raise ValueError("Custom-grid filename prefixes cannot be absolute or drive-qualified paths.")
+
+    slug = sanitize_slug(text)
+    if slug.casefold() in WINDOWS_RESERVED_DEVICE_NAMES:
+        raise ValueError(
+            f"Custom-grid filename prefix '{text}' resolves to the reserved Windows device name '{slug}'."
+        )
+    return slug
+
+
+def plan_frame_paths(out_dir: Path, labels: list[str]) -> list[Path]:
+    """Plan frame paths and prove that every one remains inside the output directory."""
+    output_root = out_dir.resolve()
+    paths: list[Path] = []
+    for label in labels:
+        path = (out_dir / f"{label}.png").resolve()
+        try:
+            path.relative_to(output_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Planned frame path escapes the output directory: {path}"
+            ) from exc
+        paths.append(path)
+    return paths
+
+
 def split_grid(
     img: Image.Image,
     rows: int,
@@ -1007,7 +1064,11 @@ def split_grid(
                 source_to_output_scale = base_scale * scale_adjustment
                 new_width = max(1, int(round(frame.width * source_to_output_scale)))
                 new_height = max(1, int(round(frame.height * source_to_output_scale)))
-                scaled = frame.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                scaled = (
+                    frame
+                    if (new_width, new_height) == frame.size
+                    else frame.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                )
                 anchor_in_crop_x = (anchor_x - crop_x0) * source_to_output_scale
                 anchor_in_crop_y = (anchor_y - crop_y0) * source_to_output_scale
                 paste_x = int(round(target_x - anchor_in_crop_x))
@@ -1016,7 +1077,7 @@ def split_grid(
                 paste_x = max(0, min(cell_size - new_width, paste_x))
                 paste_y = max(0, min(cell_size - new_height, paste_y))
                 paste_clamped = [paste_x, paste_y] != unclamped_paste
-                canvas.paste(scaled, (paste_x, paste_y), scaled)
+                canvas.alpha_composite(scaled, (paste_x, paste_y))
                 aligned_bbox = canvas.getbbox()
                 output_edge_touch = bbox_touches_edge(
                     aligned_bbox,
@@ -1076,14 +1137,15 @@ def split_grid(
             scale = common_scale or (min(cell_size / frame_width, cell_size / frame_height) * fit_scale)
             new_width = max(1, int(frame_width * scale))
             new_height = max(1, int(frame_height * scale))
-            frame = frame.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            if (new_width, new_height) != frame.size:
+                frame = frame.resize((new_width, new_height), Image.Resampling.LANCZOS)
             paste_x = (cell_size - new_width) // 2
             if align in {"bottom", "feet"}:
                 pad = max(0, int(cell_size * (1 - fit_scale) * 0.5))
                 paste_y = cell_size - new_height - pad
             else:
                 paste_y = (cell_size - new_height) // 2
-            canvas.paste(frame, (paste_x, paste_y))
+            canvas.alpha_composite(frame, (paste_x, paste_y))
             output_bbox = canvas.getbbox()
             output_edge_touch = bbox_touches_edge(
                 output_bbox,
@@ -1116,7 +1178,7 @@ def compose_sheet(frames: list[Image.Image], rows: int, cols: int, cell_size: in
     canvas = Image.new("RGBA", (cols * cell_size, rows * cell_size), (0, 0, 0, 0))
     for index, frame in enumerate(frames):
         row, col = divmod(index, cols)
-        canvas.paste(frame, (col * cell_size, row * cell_size), frame)
+        canvas.alpha_composite(frame, (col * cell_size, row * cell_size))
     return canvas
 
 
@@ -1240,7 +1302,6 @@ def cmd_process(args: argparse.Namespace) -> None:
     if args.target not in PROCESS_TARGETS:
         raise ValueError(f"Unknown process target '{args.target}'. Valid targets: {', '.join(PROCESS_TARGETS)}")
     out_dir = args.output_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
     godot_sprite3d_payload = None
     godot_sprite3d_path = None
 
@@ -1253,7 +1314,8 @@ def cmd_process(args: argparse.Namespace) -> None:
     if scale_profile:
         apply_scale_profile(args, scale_profile)
 
-    raw = Image.open(args.input).convert("RGBA")
+    with Image.open(args.input) as input_image:
+        raw = input_image.convert("RGBA")
     metadata = {
         "target": args.target,
         "mode": args.mode,
@@ -1272,9 +1334,21 @@ def cmd_process(args: argparse.Namespace) -> None:
     if has_custom_grid or args.mode in GRID_SHAPES:
         if has_custom_grid:
             rows, cols = args.rows, args.cols
+            if rows <= 0 or cols <= 0:
+                raise ValueError("Custom-grid rows and columns must be greater than zero.")
+            prefix = args.label_prefix if args.label_prefix is not None else args.mode
+            safe_prefix = validate_filename_prefix(prefix)
+            labels = [f"{safe_prefix}-{index + 1}" for index in range(rows * cols)]
         else:
             rows, cols = GRID_SHAPES[args.mode]
+            labels = list(FRAME_LABELS[args.mode])
+        planned_frame_paths = plan_frame_paths(out_dir, labels)
+        if len(labels) != rows * cols:
+            raise ValueError(
+                f"Expected {rows * cols} frame labels, got {len(labels)}."
+            )
         cell_size = args.cell_size or (96 if (rows, cols) == (4, 4) else 128)
+        out_dir.mkdir(parents=True, exist_ok=True)
         raw.save(out_dir / "raw-sheet.png")
         cleaned = remove_bg_magenta(raw.copy(), args.threshold, args.edge_threshold)
         cleaned.save(out_dir / "raw-sheet-clean.png")
@@ -1297,13 +1371,8 @@ def cmd_process(args: argparse.Namespace) -> None:
             edge_touch_margin=args.edge_touch_margin,
             scale_strategy=args.scale_strategy,
         )
-        if has_custom_grid:
-            prefix = args.label_prefix or args.mode
-            labels = [f"{prefix}-{index + 1}" for index in range(rows * cols)]
-        else:
-            labels = FRAME_LABELS[args.mode]
-        for label, frame in zip(labels, frames):
-            frame.save(out_dir / f"{label}.png")
+        for frame, frame_path in zip(frames, planned_frame_paths):
+            frame.save(frame_path)
 
         compose_sheet(frames, rows, cols, cell_size).save(out_dir / "sheet-transparent.png")
 
@@ -1385,6 +1454,7 @@ def cmd_process(args: argparse.Namespace) -> None:
     else:
         if args.godot_world_height is not None:
             raise ValueError("Godot Sprite3D metadata currently requires processed grid frames.")
+        out_dir.mkdir(parents=True, exist_ok=True)
         raw.save(out_dir / "raw.png")
         centered = center_single_sprite(raw, args.single_size, args.threshold, args.edge_threshold)
         centered.save(out_dir / "clean.png")

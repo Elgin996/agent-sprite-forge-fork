@@ -57,7 +57,8 @@ class TerrainTileBundleTests(unittest.TestCase):
             self.assertEqual(payload["schema"], MODULE.SCHEMA)
             self.assertEqual(len(payload["terrains"]["plain"]["variants"]), 3)
             self.assertEqual(payload["terrains"]["forest"]["material"]["emission_energy"], 0.2)
-            self.assertEqual(Image.open(output_dir / "plain-1.png").size, (64, 64))
+            with Image.open(output_dir / "plain-1.png") as tile:
+                self.assertEqual(tile.size, (64, 64))
             self.assertTrue((output_dir / "terrain-bundle.json").exists())
 
     def test_rejects_incomplete_row_mapping(self) -> None:
@@ -76,6 +77,62 @@ class TerrainTileBundleTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "cover every row"):
                 MODULE.extract(args)
+
+    def test_rejects_duplicate_row_assignments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_path = root / "atlas.png"
+            Image.new("RGB", (96, 64), (50, 50, 50)).save(input_path)
+            output_dir = root / "tiles"
+            args = MODULE.build_parser().parse_args(
+                [
+                    "--input", str(input_path),
+                    "--output-dir", str(output_dir),
+                    "--rows", "2",
+                    "--cols", "3",
+                    "--terrain-row", "plain=0",
+                    "--terrain-row", "forest=0",
+                    "--terrain-row", "water=1",
+                ]
+            )
+            with self.assertRaisesRegex(ValueError, "exactly one terrain per row"):
+                MODULE.extract(args)
+            self.assertFalse(output_dir.exists())
+
+    def test_rejects_out_of_range_row_assignments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_path = root / "atlas.png"
+            Image.new("RGB", (96, 64), (50, 50, 50)).save(input_path)
+            args = MODULE.build_parser().parse_args(
+                [
+                    "--input", str(input_path),
+                    "--output-dir", str(root / "tiles"),
+                    "--rows", "2",
+                    "--cols", "3",
+                    "--terrain-row", "plain=0",
+                    "--terrain-row", "forest=2",
+                ]
+            )
+            with self.assertRaisesRegex(ValueError, "cover every row"):
+                MODULE.extract(args)
+
+    def test_rejects_non_positive_dimensions_before_reading_or_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output_dir = root / "tiles"
+            args = MODULE.build_parser().parse_args(
+                [
+                    "--input", str(root / "missing.png"),
+                    "--output-dir", str(output_dir),
+                    "--rows", "0",
+                    "--cols", "3",
+                    "--terrain-row", "plain=0",
+                ]
+            )
+            with self.assertRaisesRegex(ValueError, "greater than zero"):
+                MODULE.extract(args)
+            self.assertFalse(output_dir.exists())
 
 
 if __name__ == "__main__":

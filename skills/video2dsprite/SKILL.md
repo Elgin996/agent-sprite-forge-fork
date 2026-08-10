@@ -142,6 +142,8 @@ Notes:
 - Magenta flood-fill from corners + despill
 - Even sampling for each count in `--frame-counts`
 - Feet-normalized cells, horizontal strip, grid, loop GIF per count
+- Every requested count must be no greater than the number of cleaned frames; insufficient sources fail before sprite exports are changed.
+- Reusing an output directory clears only generated `clean_*.png` and `sprite_*.png` files; unrelated files are preserved.
 
 Optional: only re-sample denser sets from existing cleaned frames:
 

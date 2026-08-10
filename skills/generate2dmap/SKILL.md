@@ -184,6 +184,7 @@ For a fixed grid, tactical board, card-board arena, or project-native 2.5D tile 
 - Use `edge_policy=isolated` when visible gaps or individual tile meshes separate cells. Use `seamless` only when adjacent tiles must visually join.
 - Preserve one surface scale, lighting direction, grain density, and palette relationship across every terrain family.
 - Extract and validate the atlas with `scripts/extract_terrain_tiles.py`. The script writes portable relative paths, per-variant luminance/contrast metrics, variant-difference QC, material hints, and a Godot mesh-top runtime contract.
+- Supply exactly one distinct terrain mapping for every atlas row; duplicate row assignments, missing/out-of-range rows, and non-positive grid dimensions fail before tile output is written.
 - Keep animated terrain states such as flame tongues, smoke, frost glints, corruption pulses, and void wisps separate from the opaque surface atlas. Generate them as transparent body/FX sheets with `$generate2dsprite`, preserve a fixed ground-contact anchor and shared silhouette envelope, and reference the generated runtime animation contract from the terrain metadata.
 - For a 2.5D `Sprite3D` status overlay on a horizontal tile mesh, record and validate `ground_lift`, `depth_policy`, `render_priority`, and `occupantPolicy`. A correct pixel-size/offset contract alone does not prove that the vertical card will survive intersection with the horizontal surface.
 - The safe default for a walkable animated status is: render above the tile surface, behind unit sprites, and apply `rear_shift_and_fade` while occupied. Do not solve tile clipping by drawing the FX over every actor.
@@ -204,6 +205,8 @@ Treat a low-contrast or near-duplicate variant failure as an art regeneration si
 ## Prop Generation Rules
 
 Use `$generate2dsprite` for reusable transparent props and visible scene objects, but the agent must write the prop prompt itself using the selected map `art_style`. Do not use a script to generate the creative prompt. For `clean_hd` maps, explicitly request clean hand-painted HD 2D game assets and explicitly forbid pixel art. For `pixel_inspired`, request clean modern pixel-art-inspired props without retro chunkiness. For `retro_pixel`, request 16-bit or retro JRPG pixel art.
+
+When extracting a prop pack, provide either `--labels` or `--labels-file`, not both. Labels are sanitized before writing; collisions such as `rock!` and `rock?` are rejected instead of overwriting one prop image.
 
 Before any prop/object image generation, classify each visible runtime object from the reference mockup:
 

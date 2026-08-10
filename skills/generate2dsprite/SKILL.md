@@ -214,6 +214,8 @@ The processor is intentionally low-level. The agent chooses:
 - `scale_strategy`
 - `edge_touch` rejection strategy
 
+Custom-grid frame prefixes are filename text, not paths: they are trimmed and slugged, while empty values, path separators, absolute/drive-qualified paths, control characters, and Windows device names are rejected before output files are written.
+
 Use the processor to gather QC metadata, not to make aesthetic decisions for you.
 
 For hero action bundles, process each action grid as its own sheet before any final atlas assembly. Use `component_mode=largest` for body-only hero grids. Use `component_mode=all` only for projectile, impact, aura, slash FX, or intentionally detached FX sheets, not for fixed-cell hero body attacks that need stable body scale.

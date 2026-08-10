@@ -171,9 +171,11 @@ def sanitize_slug(value: str) -> str:
 
 def parse_labels(args: argparse.Namespace, expected_count: int) -> list[str]:
     labels: list[str] = []
-    if args.labels:
+    if args.labels is not None and args.labels_file is not None:
+        raise ValueError("Use either --labels or --labels-file, not both.")
+    if args.labels is not None:
         labels = [item.strip() for item in args.labels.split(",")]
-    if args.labels_file:
+    elif args.labels_file is not None:
         labels = [
             line.strip()
             for line in args.labels_file.read_text(encoding="utf-8").splitlines()
@@ -184,7 +186,23 @@ def parse_labels(args: argparse.Namespace, expected_count: int) -> list[str]:
     if len(labels) > expected_count:
         raise ValueError(f"Got {len(labels)} labels for {expected_count} cells.")
     labels.extend(f"prop-{index + 1}" for index in range(len(labels), expected_count))
-    return [sanitize_slug(label) if label.lower() not in {"empty", "skip", "-"} else "" for label in labels]
+    sanitized = [
+        sanitize_slug(label) if label.lower() not in {"empty", "skip", "-"} else ""
+        for label in labels
+    ]
+    locations: dict[str, list[int]] = {}
+    for index, label in enumerate(sanitized):
+        if label:
+            locations.setdefault(label, []).append(index)
+    collisions = {
+        label: indices for label, indices in locations.items() if len(indices) > 1
+    }
+    if collisions:
+        details = "; ".join(
+            f"{label}: cells {indices}" for label, indices in sorted(collisions.items())
+        )
+        raise ValueError(f"Duplicate prop labels after sanitization: {details}")
+    return sanitized
 
 
 def alpha_bbox(img: Image.Image) -> tuple[int, int, int, int] | None:
@@ -267,11 +285,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.rows <= 0 or args.cols <= 0:
+        raise ValueError("Prop-pack rows and columns must be greater than zero.")
     expected_count = args.rows * args.cols
     labels = parse_labels(args, expected_count)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    raw = Image.open(args.input).convert("RGBA")
+    with Image.open(args.input) as input_image:
+        raw = input_image.convert("RGBA")
     cleaned = remove_bg_magenta(raw, args.threshold, args.edge_threshold)
     manifest_path = args.manifest or (args.output_dir / "prop-pack.json")
     accepted: list[dict[str, object]] = []

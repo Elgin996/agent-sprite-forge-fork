@@ -69,17 +69,26 @@ def normalized_difference(left: Image.Image, right: Image.Image) -> float:
 
 
 def extract(args: argparse.Namespace) -> dict[str, object]:
-    source = Image.open(args.input).convert("RGB")
-    if source.width % args.cols or source.height % args.rows:
-        raise ValueError(
-            f"Atlas {source.size} is not evenly divisible by {args.cols} columns x {args.rows} rows."
-        )
+    if args.rows <= 0:
+        raise ValueError(f"Terrain rows must be greater than zero, got {args.rows}.")
+    if args.cols <= 0:
+        raise ValueError(f"Terrain columns must be greater than zero, got {args.cols}.")
 
     row_map = dict(args.terrain_row)
     if len(row_map) != len(args.terrain_row):
         raise ValueError("Terrain names may only be mapped once.")
-    if set(row_map.values()) != set(range(args.rows)):
-        raise ValueError(f"Terrain rows must cover every row from 0 to {args.rows - 1} exactly once.")
+    if len(row_map) != args.rows or sorted(row_map.values()) != list(range(args.rows)):
+        raise ValueError(
+            f"Terrain rows must cover every row from 0 to {args.rows - 1} exactly once "
+            f"with exactly one terrain per row (got {len(row_map)} mappings)."
+        )
+
+    with Image.open(args.input) as input_image:
+        source = input_image.convert("RGB")
+    if source.width % args.cols or source.height % args.rows:
+        raise ValueError(
+            f"Atlas {source.size} is not evenly divisible by {args.cols} columns x {args.rows} rows."
+        )
 
     emissions = dict(args.emission)
     unknown_emissions = set(emissions) - set(row_map)
