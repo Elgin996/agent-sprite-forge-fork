@@ -56,6 +56,30 @@ class ExportAsepriteTests(unittest.TestCase):
             self.assertEqual(duration, 150)
             self.assertEqual(new_chunks, 3)  # Layer + Tag + Cel
 
+            # Unpack Layer Chunk (0x2004) starting at offset 144
+            layer_chunk_size, layer_chunk_type = struct.unpack("<IH", data[144:150])
+            self.assertEqual(layer_chunk_type, 0x2004)
+            (
+                layer_flags,
+                layer_type,
+                child_level,
+                default_w,
+                default_h,
+                blend_mode,
+                opacity,
+                reserved,
+            ) = struct.unpack("<HHHHHHB3s", data[150:166])
+            self.assertEqual(layer_flags, 3)
+            self.assertEqual(layer_type, 0)
+            self.assertEqual(child_level, 0)
+            self.assertEqual(blend_mode, 0)
+            self.assertEqual(opacity, 255)
+            self.assertEqual(reserved, b"\x00\x00\x00")
+
+            name_len = struct.unpack("<H", data[166:168])[0]
+            name = data[168 : 168 + name_len].decode("utf-8")
+            self.assertEqual(name, "Layer 1")
+
     def test_export_texturepacker_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             out_json = Path(temp_dir) / "sheet.json"

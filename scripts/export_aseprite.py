@@ -32,7 +32,7 @@ def build_layer_chunk(layer_name: str = "Layer 1") -> bytes:
     name_bytes = create_aseprite_string(layer_name)
 
     body = struct.pack(
-        "<HHHHHBB3s",
+        "<HHHHHHB3s",
         flags,
         layer_type,
         child_level,
