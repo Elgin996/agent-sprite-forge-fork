@@ -33,16 +33,16 @@ Agent Sprite Forge is not just a folder of prompts. It is a Codex-first 2D game 
       Characters, monsters, props, attacks, spells, projectiles, impacts, idles, walks, and reference-guided variants.
     </td>
     <td width="25%">
-      <strong>Layered maps</strong><br />
-      Ground-only bases, dressed references, prop packs, transparent props, y-sort placement, collision, zones, and previews.
+      <strong>Layered maps & terrain</strong><br />
+      Ground-only bases, dressed references, prop packs, terrain tile bundles, transparent props, y-sort placement, collision, and zones.
     </td>
     <td width="25%">
-      <strong>Engine handoff</strong><br />
-      Godot scenes, editable TileMap layers, separated props, encounter grass, collision bodies, exits, and debug players.
+      <strong>Engine & tool export</strong><br />
+      Godot 4 scenes (TileMapLayer & Sprite3D), native <code>.aseprite</code> project files, TexturePacker <code>sheet.json</code> atlases, and Unity WebGL.
     </td>
     <td width="25%">
-      <strong>Local cleanup</strong><br />
-      Chroma-key removal, frame extraction, alignment, transparent PNG/GIF export, prop-pack slicing, and QA metadata.
+      <strong>Local cleanup & QC</strong><br />
+      Soft alpha matting, color despill, mixel reduction, palette clamping (Pico-8/Endesga), body-axis stabilization, and strict metric gates.
     </td>
   </tr>
 </table>
@@ -501,11 +501,29 @@ Start a new Codex or Grok Build session after installation so skills reload.
 
 The local post-processors depend on:
 
-- `Pillow`
-- `numpy`
+- `Pillow>=10.0,<13`
+- `numpy>=1.26,<3`
 - `ffmpeg` (CLI on `PATH`) for `$video2dsprite` frame extraction
 
-They are listed in [`requirements.txt`](./requirements.txt) (Python only). Image/video generation is provided by the host agent; these packages handle magenta cleanup, frame splitting, alignment, GIF/PNG export, prop-pack slicing, and video-frame sampling.
+They are listed in [`requirements.txt`](./requirements.txt) and [`pyproject.toml`](./pyproject.toml).
+
+```bash
+# Run the test suite (68 unit tests)
+pytest
+# Or using standard unittest
+python -m unittest discover -s tests
+```
+
+## Deterministic Local Processors
+
+Agent Sprite Forge provides standalone deterministic CLI tools in `scripts/` as well as integrated flags within `generate2dsprite.py`:
+
+| Processor / Script | Key Capabilities | Example Usage |
+| :--- | :--- | :--- |
+| [`scripts/pixel_art.py`](./scripts/pixel_art.py) | Clamps pixels to retro palettes (`pico-8`, `endesga-32`, `gameboy`, `db16`, `db32`, `sweetie-16`) and reduces mixels via box resampling. | `python scripts/pixel_art.py --input in.png --out out.png --palette pico-8 --pixel-grid 32` |
+| [`scripts/remove_chroma_key.py`](./scripts/remove_chroma_key.py) | Removes magenta/green/blue keys with soft matting ramps, despill color correction, and alpha edge erosion. | `python scripts/remove_chroma_key.py --input in.png --out out.png --soft-matte --despill --edge-contract 1` |
+| [`scripts/export_aseprite.py`](./scripts/export_aseprite.py) | Packages animation frames into native `.aseprite` binary project files with animation tags and TexturePacker `sheet.json` atlases. | `python scripts/export_aseprite.py --frames-dir ./frames --out walk.aseprite --duration 100 --tag walk` |
+| [`scripts/generate2dsprite.py`](./skills/generate2dsprite/scripts/generate2dsprite.py) | Full postprocessing pipeline with `--despill`, `--palette`, `--pixel-grid`, `--export-aseprite`, `--export-texturepacker`, `--stabilize-axis`, and `--scale-profile`. | `python skills/generate2dsprite/scripts/generate2dsprite.py process --input raw.png --target player --mode run --rows 2 --cols 3 --output-dir out/ --export-aseprite --export-texturepacker` |
 
 ## Repository Layout
 
@@ -516,8 +534,12 @@ agent-sprite-forge/
   README.zh-CN.md
   README.ja.md
   README.ko.md
+  pyproject.toml
   requirements.txt
-  src/
+  scripts/
+    export_aseprite.py             # Native .aseprite and TexturePacker JSON exporter
+    pixel_art.py                   # Palette quantization and mixel reduction
+    remove_chroma_key.py           # Soft-matte chroma keying, despill, and edge erosion
   skills/
     generate2dmap/
       SKILL.md
@@ -528,8 +550,9 @@ agent-sprite-forge/
         map-strategies.md
         prop-pack-contract.md
       scripts/
-        compose_layered_preview.py
-        extract_prop_pack.py
+        compose_layered_preview.py # Flattened layered map preview generator
+        extract_prop_pack.py       # 2x2, 3x3, 4x4 prop pack slicer and manifest builder
+        extract_terrain_tiles.py   # Terrain tile bundle extractor with contrast/variance QC
     generate2dsprite/
       SKILL.md
       agents/
@@ -538,8 +561,10 @@ agent-sprite-forge/
         modes.md
         prompt-rules.md
       scripts/
-        generate2dsprite.py
-        make_layout_guide.py
+        generate2dsprite.py        # Sprite sheet slicer, QC evaluator, and engine exporter
+        make_anchor_layout.py      # Character anchor template generator
+        make_layout_guide.py       # Visual geometry layout guide builder
+        save_imagegen_result.py    # Robust image decoder (base64, data URLs, JSONL)
     video2dsprite/                 # Grok Build only (image_to_video)
       SKILL.md
       agents/
@@ -548,7 +573,16 @@ agent-sprite-forge/
         pipeline.md
         prompt-rules.md
       scripts/
-        video2dsprite.py
+        video2dsprite.py           # Video frame extraction, chroma key, and multi-rate sampling
+  tests/
+    test_export_aseprite.py
+    test_generate2dmap_props.py
+    test_generate2dmap_terrain.py
+    test_generate2dsprite.py
+    test_pixel_art.py
+    test_remove_chroma_key.py
+    test_save_imagegen_result.py
+    test_video2dsprite.py
   src/
     video2dsprite-ryo/             # README case study (~2–3 MB)
       base.png
@@ -610,18 +644,23 @@ For a typical sprite sheet output:
 - `raw-sheet.png`
 - `raw-sheet-clean.png`
 - `sheet-transparent.png`
-- Frame PNGs
+- Frame PNGs (`idle-1.png`, `idle-2.png`, etc.)
 - `animation.gif`
 - `prompt-used.txt`
 - `pipeline-meta.json`
+- Native Aseprite project file (`<action>.aseprite`) when `--export-aseprite` is passed
+- TexturePacker atlas metadata (`sheet.json`) when `--export-texturepacker` is passed
+- `godot-sprite3d.json` and `godot-sprite3d-bundle.json` when Godot runtime contracts are requested
+- `character-scale-profile.json` when cross-action scale profiles are written
 
 For player walk sheets, you also get direction strips and per-direction GIFs.
 
-For a map output, the result depends on the chosen pipeline:
+For map and terrain outputs:
 
-- Single baked map: complete map image, optional prompt file, and optional collision metadata.
-- Layered raster map: base map, dressed reference, prop folders or prop-pack extraction manifest, prop placement metadata, collision/zones metadata, and flattened layered preview.
-- Godot editable map: tileset/prop assets, scene files, layer metadata, collision/zones, exits, and debug player setup.
+- Single baked map: complete map image, prompt file, and collision metadata.
+- Layered raster map: base map, dressed reference, prop folders, `prop-pack.json` extraction manifest, prop placement metadata, collision/zones metadata, and flattened layered preview.
+- Terrain tile bundles: individual variant tiles (`plain-1.png`, `forest-1.png`), pairwise contrast/variance metrics, and `terrain-bundle.json`.
+- Godot editable map: tileset/prop assets, scene files (`.tscn`), layer metadata, collision/zones, exits, and debug player setup.
 
 ## Notes
 
@@ -644,3 +683,4 @@ For a map output, the result depends on the chosen pipeline:
 ## License
 
 MIT. See [LICENSE](./LICENSE).
+

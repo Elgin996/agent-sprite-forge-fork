@@ -28,10 +28,10 @@ Agent Sprite Forge 不是一组 prompt 模板。它是一套 Codex-first 的 2D 
 
 <table>
   <tr>
-    <td width="25%"><strong>精灵表</strong><br />角色、怪物、NPC、道具、攻击、法术、投射物、命中特效、idle、walk，以及参考图驱动的变体。</td>
-    <td width="25%"><strong>分层地图</strong><br />ground-only base、dressed reference、prop pack、透明 props、y-sort 摆放、碰撞、区域和预览图。</td>
-    <td width="25%"><strong>引擎交付</strong><br />Godot 场景、可编辑 TileMapLayer、分离式 props、遇怪草丛、碰撞体、出口和 debug player。</td>
-    <td width="25%"><strong>本地清理</strong><br />洋红去背、frame extraction、alignment、透明 PNG/GIF 导出、prop pack 切割和 QA metadata。</td>
+    <td width="25%"><strong>精灵表与动作</strong><br />角色、怪物、NPC、道具、攻击、法术、投射物、命中特效、idle、walk，以及参考图驱动的变体。</td>
+    <td width="25%"><strong>分层地图与地块</strong><br />ground-only base、dressed reference、prop pack、地表贴图包、透明 props、y-sort 摆放、碰撞和区域。</td>
+    <td width="25%"><strong>引擎与工具交付</strong><br />Godot 场景 (TileMapLayer & Sprite3D)、原生 <code>.aseprite</code> 项目工程、TexturePacker <code>sheet.json</code> 图集与 Unity WebGL。</td>
+    <td width="25%"><strong>本地清理与 QC</strong><br />柔化去背、边缘消色 (Despill)、Mixel 消除、复古调色板映射 (Pico-8/Endesga)、中轴防晃稳定与严格指标验收。</td>
   </tr>
 </table>
 
@@ -228,17 +228,22 @@ Use $generate2dmap to create a playable side_scroll_mode platformer stage with p
 - `raw-sheet.png`
 - `raw-sheet-clean.png`
 - `sheet-transparent.png`
-- frame PNGs
+- frame PNGs (`idle-1.png`, `idle-2.png` 等)
 - `animation.gif`
 - `prompt-used.txt`
 - `pipeline-meta.json`
+- 原生 Aseprite 工程文件 (`<action>.aseprite`，传入 `--export-aseprite` 时生成)
+- TexturePacker 图集元数据 (`sheet.json`，传入 `--export-texturepacker` 时生成)
+- `godot-sprite3d.json` 与 `godot-sprite3d-bundle.json` (指定 Godot 运行时契约时生成)
+- `character-scale-profile.json` (跨动作角色缩放基准配置)
 
-地图输出取决于 pipeline：
+地图与地块输出：
 
-- Single baked map：完整地图图像、可选 prompt file、可选 collision metadata。
-- Layered raster map：base map、dressed reference、prop folders 或 prop-pack extraction manifest、prop placement metadata、collision/zones metadata、flattened layered preview。
-- Side-scroll map：parallax layers、stage reference、separate platform/object assets、objects/collision metadata、camera bounds、stage preview。
-- Godot editable map：tileset/prop assets、scene files、layer metadata、collision/zones、exits、debug player setup。
+- Single baked map：完整地图图像、prompt 文件与碰撞元数据。
+- Layered raster map：base map、dressed reference、prop 独立图层文件夹、`prop-pack.json` 切割清单、prop 摆放元数据、碰撞与触发区域、flattened layered preview。
+- Terrain tile bundles：地表变体地块 (`plain-1.png`, `forest-1.png`)、两两对比度与变体差异矩阵、`terrain-bundle.json`。
+- Side-scroll map：parallax layers、stage reference、独立 platform/object 资产、对象与碰撞元数据、camera bounds、stage preview。
+- Godot editable map：tileset 与 prop 资产、Godot 场景文件 (`.tscn`)、TileMapLayer 元数据、碰撞/区域/出口与 debug player 脚本。
 
 ## Notes
 
