@@ -252,7 +252,7 @@ For layered maps with generated props, prefer this in-world reference mockup pip
 8. Place extracted props over the original base and compose a flattened preview.
 9. Validate that base, dressed reference, and preview dimensions match.
 
-Use `scripts/extract_prop_pack.py` after generating a solid-magenta prop sheet. If the sheet has antialiased magenta fringe, run the imagegen chroma-key helper with soft matte and despill before extraction, then extract from the alpha-cleaned sheet. Use `scripts/compose_layered_preview.py` to verify placement over the base map.
+Use `scripts/extract_prop_pack.py` after generating a solid-magenta prop sheet. If the sheet has antialiased magenta fringe, run `scripts/remove_chroma_key.py` with `--soft-matte` and `--despill` before extraction, then extract from the alpha-cleaned sheet. Use `scripts/compose_layered_preview.py` to verify placement over the base map.
 
 ## Post-Reference Object Production Gate
 
