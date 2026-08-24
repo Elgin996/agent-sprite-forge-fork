@@ -283,6 +283,28 @@ python scripts/generate2dsprite.py stabilize \
 
 This writes corrected frames, `sheet-transparent.png`, `animation.gif`, and `stabilize-meta.json` into `<run-dir>/stabilized/`. Pass `--in-place` or `--output-dir` to choose a different destination.
 
+#### Pixel Art Standardization, Despill & Multi-Format Exports
+
+To eliminate purple fringing from semi-transparent edges, snap colors to standard game palettes, downsample mixels, and export engine-ready asset formats:
+
+```bash
+python skills/generate2dsprite/scripts/generate2dsprite.py process \
+  --input <raw-sheet.png> \
+  --target player --mode run --rows 2 --cols 4 \
+  --output-dir <run-dir> \
+  --despill \
+  --palette pico-8 \
+  --pixel-grid 32 \
+  --export-aseprite \
+  --export-texturepacker
+```
+
+- `--despill`: Automatically neutralizes magenta spill on anti-aliased edge pixels.
+- `--palette <name>`: Quantizes non-transparent pixels to standard palettes (`pico-8`, `endesga-32`, `gameboy`, `db16`, `db32`, `sweetie-16`) or custom hex lists.
+- `--pixel-grid <size>`: Downsamples each frame to the specified pixel resolution (e.g. 32x32) using Box filtering, then upscales with Nearest Neighbor to eliminate mixels.
+- `--export-aseprite`: Exports native `.aseprite` binary project files containing frames, layers, and animation tags.
+- `--export-texturepacker`: Exports standard TexturePacker-compatible `sheet.json` atlas metadata for Unity 2D, Godot, and Web engines.
+
 For a character with multiple actions, write a scale profile only after an accepted reference action passes QC:
 
 ```bash

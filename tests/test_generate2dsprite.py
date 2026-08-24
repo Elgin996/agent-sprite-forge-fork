@@ -604,6 +604,47 @@ class ParserTests(unittest.TestCase):
                     )
                 )
 
+    def test_process_with_palette_despill_mixel_and_exports(self) -> None:
+        parser = MODULE.build_parser()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "raw.png"
+            out_dir = root / "out"
+
+            # Create a 2x2 grid image with magenta background
+            img = Image.new("RGBA", (64, 64), MAGENTA)
+            for r in range(2):
+                for c in range(2):
+                    left = c * 32 + 8
+                    top = r * 32 + 8
+                    img.paste(SUBJECT, (left, top, left + 16, top + 16))
+            img.save(source)
+
+            args = parser.parse_args([
+                "process",
+                "--input", str(source),
+                "--target", "asset",
+                "--mode", "idle",
+                "--output-dir", str(out_dir),
+                "--cell-size", "32",
+                "--rows", "2",
+                "--cols", "2",
+                "--despill",
+                "--palette", "pico-8",
+                "--pixel-grid", "16",
+                "--export-aseprite",
+                "--export-texturepacker",
+            ])
+            MODULE.cmd_process(args)
+
+            self.assertTrue((out_dir / "sheet-transparent.png").is_file())
+            self.assertTrue((out_dir / "idle.aseprite").is_file())
+            self.assertTrue((out_dir / "sheet.json").is_file())
+
+            meta = json.loads((out_dir / "pipeline-meta.json").read_text(encoding="utf-8"))
+            self.assertIn("aseprite_output", meta)
+            self.assertIn("texturepacker_output", meta)
+
 
 if __name__ == "__main__":
     unittest.main()

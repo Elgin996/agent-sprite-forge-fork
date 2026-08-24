@@ -16,6 +16,29 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+import sys
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from scripts.remove_chroma_key import apply_despill
+except ImportError:
+    apply_despill = None
+
+try:
+    from scripts.pixel_art import quantize_to_palette, reduce_mixels, resolve_palette
+except ImportError:
+    quantize_to_palette = None
+    reduce_mixels = None
+    resolve_palette = None
+
+try:
+    from scripts.export_aseprite import write_aseprite_file, export_texturepacker_json
+except ImportError:
+    write_aseprite_file = None
+    export_texturepacker_json = None
+
 
 ART_STYLE = (
     "Original digital monster creature. Digimon/Pokemon inspired pixel art, "
@@ -387,7 +410,12 @@ def build_prompt(target: str, mode: str, prompt: str, role: str | None = None, s
     return result, seed
 
 
-def remove_bg_magenta(img: Image.Image, threshold: int = 100, edge_threshold: int = 150) -> Image.Image:
+def remove_bg_magenta(
+    img: Image.Image,
+    threshold: int = 100,
+    edge_threshold: int = 150,
+    despill: bool = False,
+) -> Image.Image:
     pixels = img.load()
     width, height = img.size
 
@@ -432,6 +460,15 @@ def remove_bg_magenta(img: Image.Image, threshold: int = 100, edge_threshold: in
                         continue
                     if (x + dx, y + dy) not in visited:
                         queue.append((x + dx, y + dy))
+
+    if despill and apply_despill is not None:
+        arr = np.array(img)
+        rgb = arr[:, :, :3]
+        alpha = arr[:, :, 3]
+        rgb = apply_despill(rgb, alpha, (255, 0, 255))
+        arr[:, :, :3] = rgb
+        img = Image.fromarray(arr, mode="RGBA")
+
     return img
 
 
@@ -1228,8 +1265,9 @@ def split_grid(
     stabilize_strength: float = 1.0,
     max_stabilize_shift: int | None = None,
     stabilize_target: str = "center",
+    despill: bool = False,
 ) -> tuple[list[Image.Image], list[dict[str, object]], dict[str, object]]:
-    cleaned = remove_bg_magenta(img.convert("RGBA"), threshold, edge_threshold)
+    cleaned = remove_bg_magenta(img.convert("RGBA"), threshold, edge_threshold, despill=despill)
     width, height = cleaned.size
     cell_width, cell_height = width // cols, height // rows
     cropped_frames: list[Image.Image] = []
@@ -1657,11 +1695,47 @@ def cmd_process(args: argparse.Namespace) -> None:
             stabilize_strength=args.stabilize_strength,
             max_stabilize_shift=args.max_stabilize_shift,
             stabilize_target=args.stabilize_target,
+            despill=getattr(args, "despill", False),
         )
+        if getattr(args, "pixel_grid", None) and reduce_mixels is not None:
+            frames = [reduce_mixels(f, target_grid=args.pixel_grid) for f in frames]
+        if getattr(args, "palette", None) and quantize_to_palette is not None:
+            frames = [quantize_to_palette(f, palette_spec=args.palette) for f in frames]
+
         for frame, frame_path in zip(frames, planned_frame_paths):
             frame.save(frame_path)
 
         compose_sheet(frames, rows, cols, cell_size).save(out_dir / "sheet-transparent.png")
+
+        if getattr(args, "export_aseprite", False) and write_aseprite_file is not None:
+            ase_prefix = args.label_prefix or args.mode
+            ase_path = out_dir / f"{ase_prefix}.aseprite"
+            write_aseprite_file(
+                frames=frames,
+                out_path=ase_path,
+                frame_duration_ms=args.duration,
+                tags=[(ase_prefix, 0, len(frames) - 1)],
+            )
+            metadata["aseprite_output"] = str(ase_path.resolve())
+
+        if getattr(args, "export_texturepacker", False) and export_texturepacker_json is not None:
+            frame_coords = []
+            for idx in range(len(frames)):
+                r = idx // cols
+                c = idx % cols
+                frame_coords.append((c * cell_size, r * cell_size, cell_size, cell_size))
+            tp_json_path = out_dir / "sheet.json"
+            export_texturepacker_json(
+                frames=frames,
+                frame_names=[f"{l}.png" for l in labels],
+                sheet_image_name="sheet-transparent.png",
+                sheet_width=cols * cell_size,
+                sheet_height=rows * cell_size,
+                frame_coords=frame_coords,
+                out_json_path=tp_json_path,
+                duration_ms=args.duration,
+            )
+            metadata["texturepacker_output"] = str(tp_json_path.resolve())
 
         if args.mode == "player_sheet" and not has_custom_grid and (rows, cols) == (4, 4):
             directions = ["down", "left", "right", "up"]
@@ -1755,6 +1829,14 @@ def cmd_process(args: argparse.Namespace) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         raw.save(out_dir / "raw.png")
         centered = center_single_sprite(raw, args.single_size, args.threshold, args.edge_threshold)
+        if getattr(args, "despill", False) and apply_despill is not None:
+            arr = np.array(centered)
+            arr[:, :, :3] = apply_despill(arr[:, :, :3], arr[:, :, 3], (255, 0, 255))
+            centered = Image.fromarray(arr, mode="RGBA")
+        if getattr(args, "pixel_grid", None) and reduce_mixels is not None:
+            centered = reduce_mixels(centered, target_grid=args.pixel_grid)
+        if getattr(args, "palette", None) and quantize_to_palette is not None:
+            centered = quantize_to_palette(centered, palette_spec=args.palette)
         centered.save(out_dir / "clean.png")
         metadata["single_size"] = args.single_size
 
@@ -2132,6 +2214,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--write-godot-sprite3d-meta",
         type=Path,
         help="Optional output path for Godot Sprite3D metadata.",
+    )
+    process_parser.add_argument(
+        "--despill",
+        action="store_true",
+        help="Apply despill algorithm to neutralize magenta fringe on semi-transparent edges.",
+    )
+    process_parser.add_argument(
+        "--palette",
+        help="Target color palette (e.g. 'pico-8', 'endesga-32', 'gameboy', 'db16', 'db32', 'sweetie-16') or custom hex list.",
+    )
+    process_parser.add_argument(
+        "--pixel-grid",
+        type=int,
+        help="Target grid resolution (e.g. 32, 64) for mixel reduction and authentic retro downsampling.",
+    )
+    process_parser.add_argument(
+        "--export-aseprite",
+        action="store_true",
+        help="Export processed frames as a native .aseprite project file with animation tags.",
+    )
+    process_parser.add_argument(
+        "--export-texturepacker",
+        action="store_true",
+        help="Export TexturePacker-compatible JSON spritesheet metadata (sheet.json).",
     )
 
     return parser
