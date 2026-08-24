@@ -44,7 +44,7 @@ class SplitGridTests(unittest.TestCase):
         source.putpixel((2, 2), (0, 0, 0, 0))
 
         for strategy in ("fit", "preserve"):
-            frames, _info = MODULE.split_grid(
+            frames, _info, _report = MODULE.split_grid(
                 source,
                 rows=1,
                 cols=1,
@@ -501,7 +501,6 @@ class ParserTests(unittest.TestCase):
         )
         self.assertTrue(args.allow_source_edge_touch)
 
-<<<<<<< HEAD
     def test_custom_grid_prefixes_are_safe_and_slugged(self) -> None:
         self.assertEqual(MODULE.validate_filename_prefix("Heavy Attack"), "heavy-attack")
         for value in (
