@@ -674,7 +674,9 @@ def shift_frame_x(img: Image.Image, dx: int) -> Image.Image:
     if dx == 0:
         return img
     shifted = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    shifted.paste(img, (dx, 0), img)
+    # Paste without a mask: the canvas is fully transparent, and masking with
+    # the image's own alpha would multiply every channel by alpha and darken edges.
+    shifted.paste(img, (dx, 0))
     return shifted
 
 
@@ -1708,7 +1710,7 @@ def cmd_process(args: argparse.Namespace) -> None:
         compose_sheet(frames, rows, cols, cell_size).save(out_dir / "sheet-transparent.png")
 
         if getattr(args, "export_aseprite", False) and write_aseprite_file is not None:
-            ase_prefix = args.label_prefix or args.mode
+            ase_prefix = validate_filename_prefix(args.label_prefix or args.mode)
             ase_path = out_dir / f"{ase_prefix}.aseprite"
             write_aseprite_file(
                 frames=frames,
@@ -1958,10 +1960,13 @@ def cmd_process(args: argparse.Namespace) -> None:
 
 def cmd_stabilize(args: argparse.Namespace) -> None:
     """Re-align already-processed frame PNGs onto one shared vertical centerline."""
-    frame_paths = sorted(
-        args.frames_dir.glob(f"{args.prefix}-*.png"),
-        key=lambda path: int(re.search(r"-(\d+)\.png$", path.name).group(1)),
-    )
+    indexed_paths: list[tuple[int, Path]] = []
+    for path in args.frames_dir.glob(f"{args.prefix}-*.png"):
+        match = re.fullmatch(rf"{re.escape(args.prefix)}-(\d+)\.png", path.name)
+        if match is None:
+            continue
+        indexed_paths.append((int(match.group(1)), path))
+    frame_paths = [path for _, path in sorted(indexed_paths)]
     if not frame_paths:
         raise ValueError(f"No frames matching '{args.prefix}-N.png' in {args.frames_dir}")
 

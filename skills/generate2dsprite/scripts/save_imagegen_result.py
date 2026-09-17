@@ -51,12 +51,15 @@ def decode_base64(candidate: str) -> bytes | None:
     if len(cleaned) < 64:
         return None
     padding = "=" * (-len(cleaned) % 4)
-    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
-        try:
-            return decoder(cleaned + padding)
-        except (binascii.Error, ValueError):
-            continue
-    return None
+    padded = cleaned + padding
+    try:
+        return base64.b64decode(padded, validate=True)
+    except (binascii.Error, ValueError):
+        pass
+    try:
+        return base64.b64decode(padded.replace("-", "+").replace("_", "/"), validate=True)
+    except (binascii.Error, ValueError):
+        return None
 
 
 def strings_from_json(value: Any, preferred: bool = False) -> Iterable[str]:
@@ -97,7 +100,10 @@ def extract_image(text: str) -> tuple[bytes, str]:
     for candidate in reversed(list(image_generation_results_from_jsonl(text))):
         data = decode_base64(candidate)
         if data:
-            ext = sniff_extension(data)
+            try:
+                ext = sniff_extension(data)
+            except ValueError:
+                continue
             return data, ext
 
     for match in DATA_URL_RE.finditer(text):
